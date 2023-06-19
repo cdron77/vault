@@ -5,18 +5,22 @@ prompt_password() {
 	printf "Enter password: "
 	trap 'stty echo' INT
 	stty -echo
-	read PASSWORD
+	read -r PASSWORD
 	stty echo
 	printf "\n"
 	PASSWORD="$(echo "$PASSWORD" | shasum | awk '{print $1}')"
+}
+
+usage() {
+	echo "Usage: vault <new|open|close|resize> <vault>"
+	exit 1
 }
 
 random=$(tr -dc _A-Z-a-z-0-9 </dev/urandom | head -c10)
 
 if [ "$1" = "new" ]; then
 	if [ -z "$2" ]; then
-		echo "Usage: $0 new <vault>"
-		exit 1
+		usage
 	fi
 
 	if [ -f "$2" ]; then
@@ -36,7 +40,7 @@ if [ "$1" = "new" ]; then
 
 	prompt_password
 
-	dd if=/dev/zero of="$vault" bs=1M count=32
+	dd if=/dev/zero of="$vault" bs=1M count=32 >/dev/null 2>&1
 	echo "$PASSWORD" | cryptsetup -q -d - luksFormat "$vault"
 
 	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$vault" "$ident"
@@ -44,12 +48,17 @@ if [ "$1" = "new" ]; then
 	sudo cryptsetup -q luksClose "$ident"
 elif [ "$1" = "open" ]; then
 	if [ -z "$2" ]; then
-		echo "Usage: $0 open <vault>"
+		usage
+	fi
+
+	base="$(basename "$2")"
+	if [ ! -f ./"$base" ]; then
+		echo "You need to be in the same directory as the vault file"
 		exit 1
 	fi
 
-	if [ ! -f ./"$(basename "$2")" ]; then
-		echo "You need to be in the same directory as the vault file"
+	if [ -d ./"$base" ]; then
+		echo "There already exists a directory $base"
 		exit 1
 	fi
 
@@ -64,10 +73,10 @@ elif [ "$1" = "open" ]; then
 	mkdir "$vault"
 	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$newname" "$ident"
 	sudo mount /dev/mapper/"$ident" "$vault"
+	sudo chown "$USER" "$vault"
 elif [ "$1" = "close" ]; then
 	if [ -z "$2" ]; then
-		echo "Usage: $0 close <vault>"
-		exit 1
+		usage
 	fi
 
 	base="$(basename "$2")"
@@ -91,4 +100,40 @@ elif [ "$1" = "close" ]; then
 	sudo cryptsetup -q luksClose "$ident"
 	rm -rf "$opened"
 	mv "$vault" "$opened"
+elif [ "$1" = "resize" ]; then
+	if [ -z "$2" ]; then
+		usage
+	fi
+
+	if [ ! -f ./"$(basename "$2")" ]; then
+		echo "You need to be in the same directory as the vault file"
+		exit 1
+	fi
+
+	vault="$2"
+	ident="$vault$random"
+
+	# echo "Backing up $vault to .$ident.bak"
+	cp "$vault" ".$ident.bak"
+
+	current="$(ls -lh "$vault" | awk '{print $5}')"
+	echo "Current: $current"
+	printf "Expand by: "
+	read -r increase
+
+	# TODO: remove requirement for qemu-img
+	# I tried using dd/truncate/etc but it didn't work..
+	qemu-img resize -q -f raw "$vault" +"$increase"
+
+	prompt_password
+
+	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$vault" "$ident"
+	echo "$PASSWORD" | sudo cryptsetup -q -d - resize /dev/mapper/"$ident"
+	sudo e2fsck -f /dev/mapper/"$ident" >/dev/null 2>&1
+	sudo resize2fs /dev/mapper/"$ident" >/dev/null 2>&1
+	sudo cryptsetup -q luksClose "$ident"
+
+	rm ".$ident.bak"
+else
+	usage
 fi
