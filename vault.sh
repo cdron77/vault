@@ -16,6 +16,14 @@ usage() {
 	exit 1
 }
 
+luks_open() {
+	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$1" "$2"
+}
+
+luks_close() {
+	sudo cryptsetup -q luksClose "$1"
+}
+
 random=$(tr -dc _A-Z-a-z-0-9 </dev/urandom | head -c10)
 
 if [ "$1" = "new" ]; then
@@ -43,9 +51,9 @@ if [ "$1" = "new" ]; then
 	dd if=/dev/zero of="$vault" bs=1M count=32 >/dev/null 2>&1
 	echo "$PASSWORD" | cryptsetup -q -d - luksFormat "$vault"
 
-	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$vault" "$ident"
+	luks_open "$vault" "$ident"
 	sudo mkfs.ext4 -Fq /dev/mapper/"$ident"
-	sudo cryptsetup -q luksClose "$ident"
+	luks_close "$ident"
 elif [ "$1" = "open" ]; then
 	if [ -z "$2" ]; then
 		usage
@@ -70,8 +78,11 @@ elif [ "$1" = "open" ]; then
 
 	mv "$vault" "$newname"
 
+	luks_open "$newname" "$ident" || {
+		mv "$newname" "$vault"
+		exit 1
+	}
 	mkdir "$vault"
-	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$newname" "$ident"
 	sudo mount /dev/mapper/"$ident" "$vault"
 	sudo chown "$USER" "$vault"
 elif [ "$1" = "close" ]; then
@@ -97,7 +108,7 @@ elif [ "$1" = "close" ]; then
 	ident="$(echo "$vault" | cut -d- -f2)"
 
 	sudo umount "$opened"
-	sudo cryptsetup -q luksClose "$ident"
+	luks_close "$ident"
 	rm -rf "$opened"
 	mv "$vault" "$opened"
 elif [ "$1" = "resize" ]; then
@@ -113,7 +124,6 @@ elif [ "$1" = "resize" ]; then
 	vault="$2"
 	ident="$vault$random"
 
-	# echo "Backing up $vault to .$ident.bak"
 	cp "$vault" ".$ident.bak"
 
 	current="$(ls -lh "$vault" | awk '{print $5}')"
@@ -127,11 +137,14 @@ elif [ "$1" = "resize" ]; then
 
 	prompt_password
 
-	echo "$PASSWORD" | sudo cryptsetup -q -d - luksOpen "$vault" "$ident"
+	luks_open "$vault" "$ident" || {
+		mv ".$ident.bak" "$vault"
+		exit 1
+	}
 	echo "$PASSWORD" | sudo cryptsetup -q -d - resize /dev/mapper/"$ident"
 	sudo e2fsck -f /dev/mapper/"$ident" >/dev/null 2>&1
 	sudo resize2fs /dev/mapper/"$ident" >/dev/null 2>&1
-	sudo cryptsetup -q luksClose "$ident"
+	luks_close "$ident"
 
 	rm ".$ident.bak"
 else
