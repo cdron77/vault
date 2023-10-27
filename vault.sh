@@ -48,7 +48,7 @@ if [ "$1" = "new" ]; then
 
 	prompt_password
 
-	dd if=/dev/zero of="$vault" bs=1M count=32 >/dev/null 2>&1
+	dd if=/dev/zero of="$vault" bs=1M count=2048 >/dev/null 2>&1
 	echo "$PASSWORD" | cryptsetup -q -d - luksFormat "$vault"
 
 	luks_open "$vault" "$ident"
